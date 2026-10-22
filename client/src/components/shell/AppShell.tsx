@@ -24,6 +24,11 @@ export function AppShell() {
   const setMobileNav = useStore((s) => s.setMobileNav);
   const call = useStore((s) => s.call);
 
+  // the side panel is a full-screen sheet on small screens — start closed there
+  useEffect(() => {
+    if (innerWidth < 1024) useStore.setState({ rightPanel: null });
+  }, []);
+
   // keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

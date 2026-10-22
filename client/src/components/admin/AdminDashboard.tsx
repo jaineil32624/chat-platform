@@ -167,8 +167,8 @@ export function AdminDashboard() {
                     <div key={m.id} className="flex items-start gap-2.5 text-sm">
                       <Avatar user={db.users[m.authorId]} size={26} />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate"><b>{db.users[m.authorId]?.displayName}</b> <span className="text-muted">in {channelTitle(db, db.channels[m.channelId], undefined) || "DM"}</span></p>
-                        <p className="truncate text-xs text-muted">{m.content || m.kind}</p>
+                        <p className="truncate"><b>{db.users[m.authorId]?.displayName}</b> <span className="text-muted">in {db.channels[m.channelId]?.serverId ? `#${channelTitle(db, db.channels[m.channelId], undefined)}` : "a private chat"}</span></p>
+                        <p className="truncate text-xs text-muted">{m.content.replace(/[*_`#>|~]/g, "") || m.kind}</p>
                       </div>
                       <span className="shrink-0 text-[10px] text-muted">{relativeTime(m.createdAt)}</span>
                     </div>

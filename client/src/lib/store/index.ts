@@ -438,7 +438,7 @@ export const useStore = create<Store>()(
           if (!ch) return;
           if (ch.kind === "voice") return get().startCall(channelId, "voice");
           const meId = get().sessionUserId;
-          set({ openedReadAt: meId ? get().db.readState[meId]?.[channelId] ?? 0 : 0, activeChannelId: channelId, activeServerId: ch.serverId ?? "home", homeView: ch.serverId ? get().homeView : "dm", threadParentId: undefined, replyToId: undefined, editingId: undefined, mobileNav: false, rightPanel: get().rightPanel === "thread" ? null : get().rightPanel });
+          set({ openedReadAt: meId ? get().db.readState[meId]?.[channelId] ?? 0 : 0, activeChannelId: channelId, activeServerId: ch.serverId ?? "home", homeView: ch.serverId ? get().homeView : "dm", threadParentId: undefined, replyToId: undefined, editingId: undefined, mobileNav: false, rightPanel: get().rightPanel === "thread" || (isBrowser && innerWidth < 640) ? null : get().rightPanel });
           get().markRead(channelId);
         },
 

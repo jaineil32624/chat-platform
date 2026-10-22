@@ -8,9 +8,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
 const target = join(here, "..", "public");
 mkdirSync(target, { recursive: true });
-for (const dir of ["public", "assets"]) {
+for (const dir of ["public", "assets", "screenshots"]) {
   const src = join(root, dir);
   if (!existsSync(src)) continue;
-  cpSync(src, dir === "public" ? target : join(target, "assets"), { recursive: true });
+  cpSync(src, dir === "public" ? target : dir === "assets" ? join(target, "assets") : join(target, "assets", "screenshots"), { recursive: true });
 }
 console.log("[sync-public] static assets ready");

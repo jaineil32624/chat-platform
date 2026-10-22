@@ -181,11 +181,13 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  // a group, not a <label>: several fields hold multiple buttons, and a label
+  // would forward clicks on its text to the first one
   return (
-    <label className="block">
+    <div role="group" aria-label={label}>
       <span className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-muted">{label}</span>
       {children}
-    </label>
+    </div>
   );
 }
 

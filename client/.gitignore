@@ -6,3 +6,5 @@ android/
 next-env.d.ts
 *.tsbuildinfo
 .env*.local
+test-results/
+playwright-report/
