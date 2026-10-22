@@ -1,0 +1,130 @@
+name: Release builds (APK · Godot · Web)
+
+# Push a tag like v1.0.0 (or run manually) to build every downloadable
+# artifact and attach it to a GitHub Release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.1)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  android:
+    name: Android APK (Capacitor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Build web bundle
+        working-directory: client
+        run: |
+          npm ci
+          npm run build
+        env:
+          NEXT_PUBLIC_REPO: ${{ github.repository }}
+      - name: Create Android project
+        working-directory: client
+        run: |
+          npx cap add android
+          mkdir -p assets
+          cp ../assets/brand/icon-1024.png assets/icon-only.png
+          cp ../assets/brand/icon-foreground.png assets/icon-foreground.png
+          cp ../assets/brand/splash.png assets/splash.png
+          cp ../assets/brand/splash.png assets/splash-dark.png
+          npx --yes @capacitor/assets@3 generate --android --iconBackgroundColor "#0b0b14" --iconBackgroundColorDark "#0b0b14" --splashBackgroundColor "#0b0b14" --splashBackgroundColorDark "#0b0b14" || echo "icon generation skipped"
+          npx cap sync android
+      - name: Gradle assemble
+        working-directory: client/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../PulseChat.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: PulseChat.apk
+
+  godot:
+    name: Godot exports
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install export templates
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates
+          cp -r /root/.local/share/godot/export_templates/* ~/.local/share/godot/export_templates/ || true
+      - name: Export Web, Windows and Linux
+        run: |
+          apt-get update -qq && apt-get install -y -qq zip > /dev/null
+          mkdir -p build/godot/web build/godot/windows build/godot/linux dist
+          godot --headless --path godot --import || true
+          godot --headless --path godot --export-release "Web" ../build/godot/web/index.html
+          godot --headless --path godot --export-release "Windows Desktop" ../build/godot/windows/PulseLite.exe
+          godot --headless --path godot --export-release "Linux" ../build/godot/linux/PulseLite.x86_64
+          (cd build/godot/web && zip -qr ../../../dist/PulseLite-web.zip .)
+          (cd build/godot/windows && zip -qr ../../../dist/PulseLite-windows.zip .)
+          (cd build/godot/linux && chmod +x PulseLite.x86_64 && zip -qr ../../../dist/PulseLite-linux.zip .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot
+          path: dist/*.zip
+
+  web:
+    name: Offline web bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - working-directory: client
+        run: |
+          npm ci
+          npm run build
+          cd out && zip -qr ../../PulseChat-web.zip .
+        env:
+          NEXT_PUBLIC_REPO: ${{ github.repository }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: PulseChat-web.zip
+
+  publish:
+    name: Publish GitHub Release
+    needs: [android, godot, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - run: ls -la release
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Pulse ${{ env.TAG }}
+          body_path: docs/RELEASE_NOTES.md
+          files: release/*

@@ -1,0 +1,79 @@
+name: Deploy website (GitHub Pages)
+
+# Publishes the web app at https://<owner>.github.io/<repo>/
+# and the Godot web build at https://<owner>.github.io/<repo>/play/
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  godot-web:
+    name: Export Godot web build
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install export templates
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates
+          cp -r /root/.local/share/godot/export_templates/* ~/.local/share/godot/export_templates/ || true
+      - name: Export
+        run: |
+          mkdir -p build/godot/web
+          godot --headless --path godot --import || true
+          godot --headless --path godot --export-release "Web" ../build/godot/web/index.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot-web
+          path: build/godot/web
+
+  build:
+    name: Build Next.js static site
+    needs: godot-web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: actions/configure-pages@v5
+      - name: Build
+        working-directory: client
+        run: |
+          npm ci
+          npm run build
+        env:
+          NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+          NEXT_PUBLIC_REPO: ${{ github.repository }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: godot-web
+          path: client/out/play
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: client/out
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

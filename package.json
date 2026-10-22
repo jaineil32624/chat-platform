@@ -1,0 +1,15 @@
+{
+  "name": "pulse-chat-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pulse: a full-featured real-time chat platform simulation",
+  "scripts": {
+    "setup": "npm --prefix client install && npm --prefix server install",
+    "dev": "npm --prefix client run dev",
+    "server": "npm --prefix server start",
+    "build": "npm --prefix client run build",
+    "test": "npm --prefix client test && npm --prefix server test",
+    "typecheck": "npm --prefix client run typecheck"
+  },
+  "license": "MIT"
+}
