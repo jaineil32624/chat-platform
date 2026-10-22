@@ -77,6 +77,9 @@ export function sameDay(a: number, b: number) {
   return new Date(a).toDateString() === new Date(b).toDateString();
 }
 
+/** Stable empty values for store selectors (fresh literals would re-render forever). */
+export const EMPTY: readonly never[] = Object.freeze([]) as readonly never[];
+
 export const isBrowser = typeof window !== "undefined";
 
 /** Resolve a path under the configured basePath (GitHub Pages sub-folder). */
