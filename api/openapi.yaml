@@ -1,0 +1,2504 @@
+openapi: 3.1.0
+info:
+  title: Pulse REST API
+  version: 1.0.0
+  summary: REST surface for the Pulse chat platform.
+  description: |
+    The REST surface of Pulse. Resources match the Postgres schema in `database/schema.sql`,
+    and field names are the same snake_case columns.
+
+    **Auth.** Send a Supabase access token (JWT) as `Authorization: Bearer <token>`. Every
+    request runs as that user, so row-level security decides what is visible.
+
+    **Realtime.** Live updates are not part of REST. They use the Socket.IO relay
+    (`server/`, see `EVENTS.md`) or Supabase Realtime on `messages`, `reactions`,
+    `typing_indicators`, `notifications` and `poll_votes`.
+
+    **Permissions.** `roles.permissions` is a bitfield:
+    VIEW_CHANNEL=1, SEND_MESSAGES=2, MANAGE_MESSAGES=4, MANAGE_CHANNELS=8, KICK_MEMBERS=16,
+    BAN_MEMBERS=32, MUTE_MEMBERS=64, MANAGE_ROLES=128, MENTION_EVERYONE=256, ATTACH_FILES=512,
+    ADD_REACTIONS=1024, PIN_MESSAGES=2048, ADMINISTRATOR=4096.
+    Each operation that needs a permission says so in an `x-required-permission` field.
+
+    **Errors.** Every error response uses the `Error` schema.
+
+    **Pagination.** Message lists use cursors (`before`, `after`, `around`). Other lists use
+    `limit` and `offset`.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Local Next.js route handlers
+  - url: https://pulse.example.com/api/v1
+    description: Production
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+    description: Sign-up, sign-in and sessions (backed by Supabase Auth).
+  - name: Users
+    description: Profiles, achievements, XP and bookmarks.
+  - name: Friends
+    description: Friend requests and blocks.
+  - name: Servers
+    description: Servers (guilds), membership and invites.
+  - name: Roles
+    description: Roles and the permission bitfield.
+  - name: Channels
+    description: Categories, server channels, DMs and read state.
+  - name: Messages
+    description: Message CRUD, threads and scheduling.
+  - name: Reactions
+    description: Emoji reactions.
+  - name: Pins
+    description: Pinned messages.
+  - name: Polls
+    description: Polls and votes.
+  - name: Search
+    description: Full-text message search.
+  - name: Moderation
+    description: Warnings, mutes, kicks, bans and reports.
+  - name: Notifications
+    description: In-app notifications.
+  - name: Analytics
+    description: Server and personal statistics.
+  - name: System
+    description: Operational endpoints.
+
+paths:
+  # ---------------------------------------------------------------------------
+  # System
+  # ---------------------------------------------------------------------------
+  /health:
+    get:
+      tags: [System]
+      operationId: getHealth
+      summary: Liveness check
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  version: { type: string }
+        '503':
+          description: Service is degraded (e.g. database unreachable)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ---------------------------------------------------------------------------
+  # Auth
+  # ---------------------------------------------------------------------------
+  /auth/signup:
+    post:
+      tags: [Auth]
+      operationId: signUp
+      summary: Create an account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, username]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 72 }
+                username: { $ref: '#/components/schemas/Username' }
+                display_name: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        '201':
+          description: Account created. A session is returned when email confirmation is disabled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: logIn
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /auth/oauth/{provider}:
+    get:
+      tags: [Auth]
+      operationId: startOAuth
+      summary: Begin an OAuth sign-in (redirects to the provider)
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [github, google, discord] }
+        - name: redirect_to
+          in: query
+          schema: { type: string, format: uri }
+      responses:
+        '302': { description: 'Redirect to the provider' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshSession
+      summary: Exchange a refresh token for a new session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: New session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logOut
+      summary: Revoke the current session
+      responses:
+        '204': { description: 'Signed out' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/session:
+    get:
+      tags: [Auth]
+      operationId: getSession
+      summary: Current session and profile
+      responses:
+        '200':
+          description: Active session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Users
+  # ---------------------------------------------------------------------------
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: getMe
+      summary: Current user's profile
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Profile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [Users]
+      operationId: updateMe
+      summary: Update the current user's profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpdate' }
+      responses:
+        '200':
+          description: Updated profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Profile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /users:
+    get:
+      tags: [Users]
+      operationId: searchUsers
+      summary: Search users by username or display name
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 64 }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Matching users
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PublicProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: Public profile of a user
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicProfile' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{userId}/achievements:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Users]
+      operationId: listUserAchievements
+      summary: Achievements unlocked by a user
+      responses:
+        '200':
+          description: Unlocked achievements
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/UserAchievement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /achievements:
+    get:
+      tags: [Users]
+      operationId: listAchievements
+      summary: Achievement catalogue (secret achievements are hidden until you unlock them)
+      responses:
+        '200':
+          description: Achievements
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Achievement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/me/xp:
+    get:
+      tags: [Users]
+      operationId: listMyXpEvents
+      summary: Current user's XP history
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: XP events, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [xp, level, events]
+                properties:
+                  xp: { type: integer, minimum: 0 }
+                  level: { type: integer, minimum: 1 }
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/XpEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/me/saved:
+    get:
+      tags: [Users]
+      operationId: listSavedMessages
+      summary: Bookmarked messages
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Saved messages, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SavedMessage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/me/saved/{messageId}:
+    parameters:
+      - $ref: '#/components/parameters/MessageId'
+    put:
+      tags: [Users]
+      operationId: saveMessage
+      summary: Bookmark a message (idempotent)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: [string, 'null'], maxLength: 500 }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavedMessage' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Users]
+      operationId: unsaveMessage
+      summary: Remove a bookmark
+      responses:
+        '204': { description: 'Removed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Friends
+  # ---------------------------------------------------------------------------
+  /friends:
+    get:
+      tags: [Friends]
+      operationId: listFriends
+      summary: Friends, pending requests and blocks
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/FriendshipStatus' }
+        - name: direction
+          in: query
+          description: For `pending`, which side of the request you are on.
+          schema: { type: string, enum: [incoming, outgoing] }
+      responses:
+        '200':
+          description: Relationships
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Friendship' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /friends/requests:
+    post:
+      tags: [Friends]
+      operationId: sendFriendRequest
+      summary: Send a friend request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [user_id]
+                  properties:
+                    user_id: { type: string, format: uuid }
+                - type: object
+                  required: [username]
+                  properties:
+                    username: { $ref: '#/components/schemas/Username' }
+      responses:
+        '201':
+          description: Request sent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Friendship' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /friends/requests/{userId}/accept:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Friends]
+      operationId: acceptFriendRequest
+      summary: Accept an incoming request from userId
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Friendship' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /friends/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    delete:
+      tags: [Friends]
+      operationId: removeFriend
+      summary: Unfriend, cancel or decline a request
+      responses:
+        '204': { description: 'Removed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /friends/{userId}/block:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    put:
+      tags: [Friends]
+      operationId: blockUser
+      summary: Block a user (replaces any existing relationship)
+      responses:
+        '204': { description: 'Blocked' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Friends]
+      operationId: unblockUser
+      summary: Remove a block
+      responses:
+        '204': { description: 'Unblocked' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Servers
+  # ---------------------------------------------------------------------------
+  /servers:
+    get:
+      tags: [Servers]
+      operationId: listMyServers
+      summary: Servers the current user belongs to
+      responses:
+        '200':
+          description: Servers
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Server' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Servers]
+      operationId: createServer
+      summary: Create a server (also creates @everyone, a default category and #general)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServerCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /servers/discover:
+    get:
+      tags: [Servers]
+      operationId: discoverServers
+      summary: Browse public servers
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Public servers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/Server'
+                    - type: object
+                      properties:
+                        member_count: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /servers/join:
+    post:
+      tags: [Servers]
+      operationId: joinServer
+      summary: Join a server by invite code (maps to `join_server_by_invite`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invite_code]
+              properties:
+                invite_code: { type: string, pattern: '^[A-Za-z0-9_-]{4,32}$' }
+      responses:
+        '200':
+          description: Joined (or already a member)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+        '403':
+          description: Banned from this server
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /servers/{serverId}:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Servers]
+      operationId: getServer
+      summary: Server details, including your effective permissions
+      responses:
+        '200':
+          description: Server
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Server'
+                  - type: object
+                    properties:
+                      my_permissions: { $ref: '#/components/schemas/PermissionBits' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Servers]
+      operationId: updateServer
+      summary: Update server settings
+      x-required-permission: ADMINISTRATOR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServerUpdate' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Servers]
+      operationId: deleteServer
+      summary: Delete the server (owner only)
+      responses:
+        '204': { description: 'Deleted' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /servers/{serverId}/invite:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    post:
+      tags: [Servers]
+      operationId: regenerateInvite
+      summary: Regenerate the invite code
+      x-required-permission: ADMINISTRATOR
+      responses:
+        '200':
+          description: New invite code
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite_code]
+                properties:
+                  invite_code: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /servers/{serverId}/members:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Servers]
+      operationId: listMembers
+      summary: Server roster
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - name: role_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ServerMember' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /servers/{serverId}/members/@me:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    patch:
+      tags: [Servers]
+      operationId: updateMyMembership
+      summary: Change your nickname in this server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nickname: { type: [string, 'null'], minLength: 1, maxLength: 32 }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerMember' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Servers]
+      operationId: leaveServer
+      summary: Leave the server (the owner cannot leave)
+      responses:
+        '204': { description: 'Left' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /servers/{serverId}/members/{userId}/roles/{roleId}:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/RoleId'
+    put:
+      tags: [Roles]
+      operationId: assignRole
+      summary: Give a member a role
+      x-required-permission: MANAGE_ROLES
+      responses:
+        '204': { description: 'Assigned' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Roles]
+      operationId: unassignRole
+      summary: Take a role from a member
+      x-required-permission: MANAGE_ROLES
+      responses:
+        '204': { description: 'Removed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /servers/{serverId}/roles:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Roles]
+      operationId: listRoles
+      summary: Roles, highest position first
+      responses:
+        '200':
+          description: Roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Roles]
+      operationId: createRole
+      summary: Create a role
+      description: Granting `ADMINISTRATOR` (4096) also requires ADMINISTRATOR.
+      x-required-permission: MANAGE_ROLES
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoleWrite' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /servers/{serverId}/roles/{roleId}:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+      - $ref: '#/components/parameters/RoleId'
+    patch:
+      tags: [Roles]
+      operationId: updateRole
+      summary: Update a role
+      x-required-permission: MANAGE_ROLES
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoleWrite' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Roles]
+      operationId: deleteRole
+      summary: Delete a role (@everyone cannot be deleted)
+      x-required-permission: MANAGE_ROLES
+      responses:
+        '204': { description: 'Deleted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /servers/{serverId}/categories:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Channels]
+      operationId: listCategories
+      summary: Channel categories
+      responses:
+        '200':
+          description: Categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ChannelCategory' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Channels]
+      operationId: createCategory
+      summary: Create a category
+      x-required-permission: MANAGE_CHANNELS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                position: { type: integer, minimum: 0 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelCategory' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /servers/{serverId}/categories/{categoryId}:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+      - name: categoryId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Channels]
+      operationId: updateCategory
+      summary: Rename or reorder a category
+      x-required-permission: MANAGE_CHANNELS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                position: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelCategory' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Channels]
+      operationId: deleteCategory
+      summary: Delete a category (its channels become uncategorised)
+      x-required-permission: MANAGE_CHANNELS
+      responses:
+        '204': { description: 'Deleted' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Channels
+  # ---------------------------------------------------------------------------
+  /servers/{serverId}/channels:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Channels]
+      operationId: listServerChannels
+      summary: Channels you can view in the server
+      responses:
+        '200':
+          description: Channels
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Channel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Channels]
+      operationId: createChannel
+      summary: Create a server channel
+      x-required-permission: MANAGE_CHANNELS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChannelCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /dms:
+    get:
+      tags: [Channels]
+      operationId: listDirectMessages
+      summary: DM and group DM channels, most recently active first
+      responses:
+        '200':
+          description: Channels
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/Channel'
+                    - type: object
+                      properties:
+                        recipients:
+                          type: array
+                          items: { $ref: '#/components/schemas/PublicProfile' }
+                        unread_count: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Channels]
+      operationId: openDirectMessage
+      summary: Open a 1:1 DM, or create a group DM when more than one user is given
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_ids]
+              properties:
+                user_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 9
+                  uniqueItems: true
+                  items: { type: string, format: uuid }
+                name:
+                  type: string
+                  maxLength: 100
+                  description: Group DMs only.
+      responses:
+        '200':
+          description: Existing or new channel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '403':
+          description: One side has blocked the other
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /channels/{channelId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Channels]
+      operationId: getChannel
+      summary: Channel details
+      responses:
+        '200':
+          description: Channel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Channels]
+      operationId: updateChannel
+      summary: Update a channel
+      x-required-permission: MANAGE_CHANNELS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChannelUpdate' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Channels]
+      operationId: deleteChannel
+      summary: Delete a channel
+      x-required-permission: MANAGE_CHANNELS
+      responses:
+        '204': { description: 'Deleted' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /channels/{channelId}/members:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Channels]
+      operationId: listChannelMembers
+      summary: Explicit members (DMs, group DMs, private channels)
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ChannelMember' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Channels]
+      operationId: addChannelMember
+      summary: Add a member to a private channel or group DM
+      x-required-permission: MANAGE_CHANNELS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Added
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelMember' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /channels/{channelId}/read:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    put:
+      tags: [Channels]
+      operationId: markChannelRead
+      summary: Move your read marker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message_id]
+              properties:
+                message_id: { type: string, format: uuid }
+      responses:
+        '204': { description: 'Updated' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /channels/{channelId}/typing:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    post:
+      tags: [Channels]
+      operationId: startTyping
+      summary: Signal that you are typing (expires after 8 seconds)
+      description: Upserts `typing_indicators`. Low-latency clients send the `typing` event over Socket.IO instead.
+      x-required-permission: SEND_MESSAGES
+      responses:
+        '204': { description: 'Recorded' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Messages
+  # ---------------------------------------------------------------------------
+  /channels/{channelId}/messages:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Messages]
+      operationId: listMessages
+      summary: Message history (newest first)
+      description: Give at most one of `before`, `after` or `around`. Thread replies are left out unless `include_threads=true`.
+      x-required-permission: VIEW_CHANNEL
+      parameters:
+        - name: before
+          in: query
+          description: Message id cursor; returns older messages.
+          schema: { type: string, format: uuid }
+        - name: after
+          in: query
+          description: Message id cursor; returns newer messages.
+          schema: { type: string, format: uuid }
+        - name: around
+          in: query
+          description: Message id; returns `limit` messages centred on it.
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: include_threads
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessagePage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Messages]
+      operationId: createMessage
+      summary: Send a message
+      description: |
+        Requires SEND_MESSAGES. Attachments also need ATTACH_FILES, and `mention_everyone` also
+        needs MENTION_EVERYONE. Announcement channels need MANAGE_MESSAGES. Muted members get 403.
+        If `scheduled_for` is in the future, the message is created with `status: scheduled`
+        and only its author can see it until it is published.
+      x-required-permission: SEND_MESSAGES
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Client-generated key; a retry with the same key returns the original message.
+          schema: { type: string, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MessageCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413':
+          description: Content or attachments too large
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /channels/{channelId}/messages/{messageId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+    get:
+      tags: [Messages]
+      operationId: getMessage
+      summary: A single message
+      responses:
+        '200':
+          description: Message
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Messages]
+      operationId: updateMessage
+      summary: Edit your own message (sets `edited_at`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MessageUpdate' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Messages]
+      operationId: deleteMessage
+      summary: Soft-delete a message
+      description: Authors can delete their own messages. Deleting someone else's needs MANAGE_MESSAGES. Content is scrubbed, but the row remains as a tombstone (`deleted_at`).
+      responses:
+        '204': { description: 'Deleted' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /channels/{channelId}/messages/{messageId}/thread:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+    get:
+      tags: [Messages]
+      operationId: listThread
+      summary: Replies in a message's thread (oldest first)
+      parameters:
+        - name: after
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Thread replies
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessagePage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Reactions
+  # ---------------------------------------------------------------------------
+  /channels/{channelId}/messages/{messageId}/reactions:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+    get:
+      tags: [Reactions]
+      operationId: listReactions
+      summary: Reaction counts on a message
+      responses:
+        '200':
+          description: Reaction summary
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ReactionSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /channels/{channelId}/messages/{messageId}/reactions/{emoji}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+      - name: emoji
+        in: path
+        required: true
+        description: URL-encoded emoji or custom emoji code (e.g. `%F0%9F%91%8B` or `:party_parrot:`).
+        schema: { type: string, minLength: 1, maxLength: 64 }
+    get:
+      tags: [Reactions]
+      operationId: listReactionUsers
+      summary: Users who reacted with an emoji
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PublicProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [Reactions]
+      operationId: addReaction
+      summary: Add your reaction (idempotent)
+      x-required-permission: ADD_REACTIONS
+      responses:
+        '204': { description: 'Added' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Reactions]
+      operationId: removeReaction
+      summary: Remove your reaction
+      parameters:
+        - name: user_id
+          in: query
+          description: Remove another user's reaction (requires MANAGE_MESSAGES).
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: 'Removed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /channels/{channelId}/messages/{messageId}/reactions/{emoji}/toggle:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+      - name: emoji
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 64 }
+    post:
+      tags: [Reactions]
+      operationId: toggleReaction
+      summary: Toggle your reaction (maps to `toggle_reaction`)
+      x-required-permission: ADD_REACTIONS
+      responses:
+        '200':
+          description: New state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [added]
+                properties:
+                  added: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Pins
+  # ---------------------------------------------------------------------------
+  /channels/{channelId}/pins:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Pins]
+      operationId: listPins
+      summary: Pinned messages, most recently pinned first
+      responses:
+        '200':
+          description: Pinned messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Message' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /channels/{channelId}/pins/{messageId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+    put:
+      tags: [Pins]
+      operationId: pinMessage
+      summary: Pin a message
+      x-required-permission: PIN_MESSAGES
+      responses:
+        '204': { description: 'Pinned' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Pins]
+      operationId: unpinMessage
+      summary: Unpin a message
+      x-required-permission: PIN_MESSAGES
+      responses:
+        '204': { description: 'Unpinned' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------------------
+  # Polls
+  # ---------------------------------------------------------------------------
+  /channels/{channelId}/polls:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    post:
+      tags: [Polls]
+      operationId: createPoll
+      summary: Post a poll (creates a `kind=poll` message plus its poll)
+      x-required-permission: SEND_MESSAGES
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PollCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message, poll]
+                properties:
+                  message: { $ref: '#/components/schemas/Message' }
+                  poll: { $ref: '#/components/schemas/Poll' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /polls/{pollId}:
+    parameters:
+      - $ref: '#/components/parameters/PollId'
+    get:
+      tags: [Polls]
+      operationId: getPoll
+      summary: Poll with tallies (maps to `get_poll_results`)
+      responses:
+        '200':
+          description: Poll and results
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Poll'
+                  - type: object
+                    required: [results]
+                    properties:
+                      results:
+                        type: array
+                        items: { $ref: '#/components/schemas/PollResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /polls/{pollId}/votes:
+    parameters:
+      - $ref: '#/components/parameters/PollId'
+    put:
+      tags: [Polls]
+      operationId: castVote
+      summary: Vote. On single-choice polls this replaces your previous vote.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [option_ids]
+              properties:
+                option_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 10
+                  uniqueItems: true
+                  items: { type: string, maxLength: 64 }
+      responses:
+        '200':
+          description: Updated results
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PollResult' }
+        '400':
+          description: Unknown option, poll closed, or multiple options on a single-choice poll
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Polls]
+      operationId: retractVote
+      summary: Retract all your votes
+      responses:
+        '204': { description: 'Retracted' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Search
+  # ---------------------------------------------------------------------------
+  /search/messages:
+    get:
+      tags: [Search]
+      operationId: searchMessages
+      summary: Full-text message search (maps to `search_messages`; respects RLS)
+      parameters:
+        - name: q
+          in: query
+          description: Web-search syntax, e.g. `deploy -staging "release notes"`. Leave it empty to filter without text.
+          schema: { type: string, maxLength: 256 }
+        - name: server_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: channel_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: author_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: has
+          in: query
+          schema: { type: string, enum: [attachment, link, pinned, poll] }
+        - name: before
+          in: query
+          schema: { type: string, format: date-time }
+        - name: after
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Hits ordered by rank, then recency
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/SearchHit' }
+                  next_offset: { type: [integer, 'null'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  # ---------------------------------------------------------------------------
+  # Moderation
+  # ---------------------------------------------------------------------------
+  /servers/{serverId}/moderation/actions:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Moderation]
+      operationId: listModerationActions
+      summary: Moderation log
+      x-required-permission: KICK_MEMBERS | BAN_MEMBERS | MUTE_MEMBERS (any)
+      parameters:
+        - name: target_user_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: action
+          in: query
+          schema: { $ref: '#/components/schemas/ModerationActionType' }
+        - name: active
+          in: query
+          description: Only actions that are unexpired and not revoked.
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Actions, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ModerationAction' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Moderation]
+      operationId: createModerationAction
+      summary: Warn, mute, kick or ban a member
+      description: |
+        Permissions: `warn` needs any moderation permission, `mute` needs MUTE_MEMBERS,
+        `kick` needs KICK_MEMBERS and `ban` needs BAN_MEMBERS. Nobody can moderate the owner.
+        Only the owner can moderate administrators. A mute must have `expires_at`. A warn or
+        kick must not. Kicks and bans remove the member immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationActionCreate' }
+      responses:
+        '201':
+          description: Recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationAction' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /servers/{serverId}/moderation/actions/{actionId}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+      - name: actionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Moderation]
+      operationId: revokeModerationAction
+      summary: Lift a mute or ban early
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationAction' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /servers/{serverId}/bans:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Moderation]
+      operationId: listBans
+      summary: Active bans
+      x-required-permission: BAN_MEMBERS
+      responses:
+        '200':
+          description: Active bans
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ModerationAction' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /reports:
+    post:
+      tags: [Moderation]
+      operationId: createReport
+      summary: Report a message or user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportCreate' }
+      responses:
+        '201':
+          description: Filed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /servers/{serverId}/reports:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Moderation]
+      operationId: listReports
+      summary: Report queue
+      x-required-permission: MANAGE_MESSAGES
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ReportStatus' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Reports
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Report' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /servers/{serverId}/reports/{reportId}:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+      - name: reportId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Moderation]
+      operationId: updateReport
+      summary: Triage a report
+      x-required-permission: MANAGE_MESSAGES
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/ReportStatus' }
+                resolution_note: { type: string, maxLength: 2000 }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Notifications
+  # ---------------------------------------------------------------------------
+  /notifications:
+    get:
+      tags: [Notifications]
+      operationId: listNotifications
+      summary: Your notifications, newest first
+      parameters:
+        - name: unread
+          in: query
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, unread_count]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  unread_count: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/read:
+    post:
+      tags: [Notifications]
+      operationId: markNotificationsRead
+      summary: Mark notifications read (all of them when `ids` is omitted)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        '204': { description: 'Marked' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/{notificationId}:
+    parameters:
+      - name: notificationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [Notifications]
+      operationId: deleteNotification
+      summary: Dismiss a notification
+      responses:
+        '204': { description: 'Deleted' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Analytics
+  # ---------------------------------------------------------------------------
+  /servers/{serverId}/analytics:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Analytics]
+      operationId: getServerAnalytics
+      summary: Daily activity (maps to `get_server_analytics`)
+      x-required-permission: ADMINISTRATOR
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        '200':
+          description: Daily series and totals
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerAnalytics' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /servers/{serverId}/analytics/leaderboard:
+    parameters:
+      - $ref: '#/components/parameters/ServerId'
+    get:
+      tags: [Analytics]
+      operationId: getServerLeaderboard
+      summary: XP leaderboard for the server's members
+      parameters:
+        - name: period
+          in: query
+          schema: { type: string, enum: [week, month, all], default: all }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+      responses:
+        '200':
+          description: Leaderboard
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [rank, user, xp]
+                  properties:
+                    rank: { type: integer, minimum: 1 }
+                    user: { $ref: '#/components/schemas/PublicProfile' }
+                    xp: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /analytics/me:
+    get:
+      tags: [Analytics]
+      operationId: getMyAnalytics
+      summary: Personal stats
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages_sent: { type: integer }
+                  reactions_given: { type: integer }
+                  reactions_received: { type: integer }
+                  servers: { type: integer }
+                  friends: { type: integer }
+                  achievements_unlocked: { type: integer }
+                  xp: { type: integer }
+                  level: { type: integer }
+                  most_active_channel_id: { type: [string, 'null'], format: uuid }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase access token.
+
+  parameters:
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ServerId:
+      name: serverId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RoleId:
+      name: roleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ChannelId:
+      name: channelId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PollId:
+      name: pollId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Missing permission, muted, banned or blocked
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found, or not visible to you
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Already exists
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Rate limited
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds to wait.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    # ---- primitives -----------------------------------------------------------
+    Uuid:
+      type: string
+      format: uuid
+    Timestamp:
+      type: string
+      format: date-time
+    Username:
+      type: string
+      pattern: '^[a-z0-9_.]{2,32}$'
+      examples: [alice]
+    HexColor:
+      type: string
+      pattern: '^#[0-9a-fA-F]{6}$'
+      examples: ['#7c3aed']
+    PermissionBits:
+      type: integer
+      format: int64
+      minimum: 0
+      maximum: 8191
+      description: |
+        Bitfield. VIEW_CHANNEL=1, SEND_MESSAGES=2, MANAGE_MESSAGES=4, MANAGE_CHANNELS=8,
+        KICK_MEMBERS=16, BAN_MEMBERS=32, MUTE_MEMBERS=64, MANAGE_ROLES=128, MENTION_EVERYONE=256,
+        ATTACH_FILES=512, ADD_REACTIONS=1024, PIN_MESSAGES=2048, ADMINISTRATOR=4096.
+      examples: [1539]
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Machine-readable code.
+          examples: [forbidden, not_found, validation_failed, rate_limited, muted, banned]
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+
+    # ---- enums ----------------------------------------------------------------
+    PresenceStatus:
+      type: string
+      enum: [online, idle, dnd, offline]
+    FriendshipStatus:
+      type: string
+      enum: [pending, accepted, blocked]
+    ChannelKind:
+      type: string
+      enum: [dm, group_dm, text, voice, announcement]
+    MessageKind:
+      type: string
+      enum: [text, gif, sticker, voice, poll, trivia, system]
+    MessageStatus:
+      type: string
+      enum: [scheduled, sending, sent, delivered, read, failed]
+    ModerationActionType:
+      type: string
+      enum: [warn, mute, kick, ban]
+    ReportStatus:
+      type: string
+      enum: [open, reviewing, resolved, dismissed]
+    NotificationType:
+      type: string
+      enum: [mention, reply, reaction, friend_request, friend_accept, server_invite, moderation, achievement, system]
+
+    # ---- auth -----------------------------------------------------------------
+    AuthSession:
+      type: object
+      required: [access_token, refresh_token, expires_at, user]
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, const: bearer }
+        expires_at: { type: integer, description: 'Unix seconds.' }
+        user: { $ref: '#/components/schemas/Profile' }
+
+    # ---- users ----------------------------------------------------------------
+    PublicProfile:
+      type: object
+      required: [id, username]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        username: { $ref: '#/components/schemas/Username' }
+        display_name: { type: [string, 'null'], maxLength: 64 }
+        avatar_url: { type: [string, 'null'] }
+        banner_url: { type: [string, 'null'] }
+        bio: { type: [string, 'null'], maxLength: 500 }
+        accent_color: { oneOf: [{ $ref: '#/components/schemas/HexColor' }, { type: 'null' }] }
+        status: { $ref: '#/components/schemas/PresenceStatus' }
+        custom_status: { type: [string, 'null'], maxLength: 128 }
+        level: { type: integer, minimum: 1 }
+        xp: { type: integer, minimum: 0 }
+        public_key: { type: [string, 'null'], description: 'E2EE public key (base64).' }
+        last_seen_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+    Profile:
+      allOf:
+        - $ref: '#/components/schemas/PublicProfile'
+        - type: object
+          properties:
+            email: { type: string, format: email }
+            updated_at: { $ref: '#/components/schemas/Timestamp' }
+    ProfileUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        username: { $ref: '#/components/schemas/Username' }
+        display_name: { type: [string, 'null'], minLength: 1, maxLength: 64 }
+        avatar_url: { type: [string, 'null'] }
+        banner_url: { type: [string, 'null'] }
+        bio: { type: [string, 'null'], maxLength: 500 }
+        accent_color: { oneOf: [{ $ref: '#/components/schemas/HexColor' }, { type: 'null' }] }
+        status: { $ref: '#/components/schemas/PresenceStatus' }
+        custom_status: { type: [string, 'null'], maxLength: 128 }
+        public_key: { type: [string, 'null'] }
+
+    Friendship:
+      type: object
+      required: [requester_id, addressee_id, status, created_at]
+      properties:
+        requester_id: { $ref: '#/components/schemas/Uuid' }
+        addressee_id: { $ref: '#/components/schemas/Uuid' }
+        status: { $ref: '#/components/schemas/FriendshipStatus' }
+        user:
+          $ref: '#/components/schemas/PublicProfile'
+          description: The other party, from the caller's point of view.
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+
+    Achievement:
+      type: object
+      required: [id, name, description, xp_reward]
+      properties:
+        id: { type: string, pattern: '^[a-z0-9_]{2,64}$' }
+        name: { type: string }
+        description: { type: string }
+        icon: { type: [string, 'null'] }
+        xp_reward: { type: integer, minimum: 0 }
+        is_secret: { type: boolean }
+    UserAchievement:
+      type: object
+      required: [user_id, achievement_id, unlocked_at]
+      properties:
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        achievement_id: { type: string }
+        achievement: { $ref: '#/components/schemas/Achievement' }
+        unlocked_at: { $ref: '#/components/schemas/Timestamp' }
+    XpEvent:
+      type: object
+      required: [id, user_id, amount, reason, created_at]
+      properties:
+        id: { type: integer }
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        server_id: { type: [string, 'null'], format: uuid }
+        amount: { type: integer }
+        reason: { type: string }
+        source_message_id: { type: [string, 'null'], format: uuid }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+    SavedMessage:
+      type: object
+      required: [user_id, message_id, created_at]
+      properties:
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        message_id: { $ref: '#/components/schemas/Uuid' }
+        note: { type: [string, 'null'], maxLength: 500 }
+        message: { $ref: '#/components/schemas/Message' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    # ---- servers --------------------------------------------------------------
+    Server:
+      type: object
+      required: [id, name, owner_id, is_public, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 2, maxLength: 100 }
+        description: { type: [string, 'null'], maxLength: 1000 }
+        icon_url: { type: [string, 'null'] }
+        banner_url: { type: [string, 'null'] }
+        owner_id: { $ref: '#/components/schemas/Uuid' }
+        is_public: { type: boolean }
+        invite_code: { type: string, description: 'Only returned to members.' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    ServerCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 100 }
+        description: { type: string, maxLength: 1000 }
+        icon_url: { type: string }
+        is_public: { type: boolean, default: false }
+    ServerUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 2, maxLength: 100 }
+        description: { type: [string, 'null'], maxLength: 1000 }
+        icon_url: { type: [string, 'null'] }
+        banner_url: { type: [string, 'null'] }
+        is_public: { type: boolean }
+    ServerMember:
+      type: object
+      required: [server_id, user_id, joined_at]
+      properties:
+        server_id: { $ref: '#/components/schemas/Uuid' }
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        nickname: { type: [string, 'null'], maxLength: 32 }
+        joined_at: { $ref: '#/components/schemas/Timestamp' }
+        role_ids:
+          type: array
+          items: { $ref: '#/components/schemas/Uuid' }
+        user: { $ref: '#/components/schemas/PublicProfile' }
+    Role:
+      type: object
+      required: [id, server_id, name, position, permissions, is_default]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        server_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        color: { oneOf: [{ $ref: '#/components/schemas/HexColor' }, { type: 'null' }] }
+        position: { type: integer, minimum: 0 }
+        permissions: { $ref: '#/components/schemas/PermissionBits' }
+        is_default: { type: boolean, description: 'True for @everyone.' }
+        hoist: { type: boolean }
+        mentionable: { type: boolean }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    RoleWrite:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        color: { oneOf: [{ $ref: '#/components/schemas/HexColor' }, { type: 'null' }] }
+        position: { type: integer, minimum: 0 }
+        permissions: { $ref: '#/components/schemas/PermissionBits' }
+        hoist: { type: boolean }
+        mentionable: { type: boolean }
+
+    # ---- channels -------------------------------------------------------------
+    ChannelCategory:
+      type: object
+      required: [id, server_id, name, position]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        server_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string, maxLength: 100 }
+        position: { type: integer, minimum: 0 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    Channel:
+      type: object
+      required: [id, kind, position, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        server_id: { type: [string, 'null'], format: uuid, description: 'Null for dm / group_dm.' }
+        category_id: { type: [string, 'null'], format: uuid }
+        kind: { $ref: '#/components/schemas/ChannelKind' }
+        name: { type: [string, 'null'], maxLength: 100, description: 'Always null for 1:1 DMs.' }
+        topic: { type: [string, 'null'], maxLength: 1024 }
+        icon_url: { type: [string, 'null'] }
+        position: { type: integer, minimum: 0 }
+        is_private: { type: boolean }
+        is_nsfw: { type: boolean }
+        slowmode_seconds: { type: integer, minimum: 0, maximum: 21600 }
+        created_by: { type: [string, 'null'], format: uuid }
+        last_message_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    ChannelCreate:
+      type: object
+      required: [name, kind]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        kind:
+          type: string
+          enum: [text, voice, announcement]
+        category_id: { type: [string, 'null'], format: uuid }
+        topic: { type: string, maxLength: 1024 }
+        position: { type: integer, minimum: 0 }
+        is_private: { type: boolean, default: false }
+        is_nsfw: { type: boolean, default: false }
+        slowmode_seconds: { type: integer, minimum: 0, maximum: 21600, default: 0 }
+    ChannelUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        category_id: { type: [string, 'null'], format: uuid }
+        topic: { type: [string, 'null'], maxLength: 1024 }
+        icon_url: { type: [string, 'null'] }
+        position: { type: integer, minimum: 0 }
+        is_private: { type: boolean }
+        is_nsfw: { type: boolean }
+        slowmode_seconds: { type: integer, minimum: 0, maximum: 21600 }
+    ChannelMember:
+      type: object
+      required: [channel_id, user_id, joined_at]
+      properties:
+        channel_id: { $ref: '#/components/schemas/Uuid' }
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        joined_at: { $ref: '#/components/schemas/Timestamp' }
+        last_read_message_id: { type: [string, 'null'], format: uuid }
+        last_read_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        muted: { type: boolean }
+
+    # ---- messages -------------------------------------------------------------
+    Attachment:
+      type: object
+      required: [id, name, url, contentType, size]
+      description: Element of `messages.attachments` (the keys inside this jsonb are camelCase).
+      properties:
+        id: { type: string }
+        name: { type: string, maxLength: 255 }
+        url:
+          type: string
+          description: Storage path in the `attachments` bucket (`{channel_id}/{user_id}/{file}`), or an absolute URL.
+        contentType: { type: string, examples: [image/png] }
+        size: { type: integer, minimum: 0, maximum: 26214400 }
+        width: { type: integer }
+        height: { type: integer }
+        durationMs: { type: integer, description: 'Audio and video.' }
+    MessageMetadata:
+      type: object
+      description: Data that depends on the message kind. The keys inside this jsonb are camelCase.
+      properties:
+        gif:
+          type: object
+          properties:
+            url: { type: string, format: uri }
+            provider: { type: string }
+            width: { type: integer }
+            height: { type: integer }
+        sticker:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            url: { type: string }
+        voice:
+          type: object
+          properties:
+            durationMs: { type: integer }
+            waveform:
+              type: array
+              items: { type: integer, minimum: 0, maximum: 255 }
+        trivia:
+          type: object
+          properties:
+            choices:
+              type: array
+              items: { type: string }
+            answerIndex: { type: integer, minimum: 0 }
+            explanation: { type: string }
+        encryption:
+          type: object
+          description: For E2EE messages (`ciphertext` set).
+          properties:
+            alg: { type: string, examples: [x25519-xsalsa20-poly1305] }
+            nonce: { type: string }
+            senderKeyId: { type: string }
+      additionalProperties: true
+    Message:
+      type: object
+      required: [id, channel_id, kind, status, content, attachments, pinned, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        channel_id: { $ref: '#/components/schemas/Uuid' }
+        author_id: { type: [string, 'null'], format: uuid, description: 'Null for system messages or deleted users.' }
+        author: { $ref: '#/components/schemas/PublicProfile' }
+        kind: { $ref: '#/components/schemas/MessageKind' }
+        status: { $ref: '#/components/schemas/MessageStatus' }
+        content: { type: string, maxLength: 4000, description: 'Empty when deleted or end-to-end encrypted.' }
+        ciphertext: { type: [string, 'null'], maxLength: 32768 }
+        attachments:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/Attachment' }
+        metadata: { $ref: '#/components/schemas/MessageMetadata' }
+        mentions:
+          type: array
+          items: { $ref: '#/components/schemas/Uuid' }
+        mention_everyone: { type: boolean }
+        reply_to: { type: [string, 'null'], format: uuid }
+        thread_parent_id: { type: [string, 'null'], format: uuid }
+        thread_reply_count: { type: integer, minimum: 0 }
+        pinned: { type: boolean }
+        pinned_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        pinned_by: { type: [string, 'null'], format: uuid }
+        scheduled_for: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        edited_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        deleted_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        reactions:
+          type: array
+          items: { $ref: '#/components/schemas/ReactionSummary' }
+        poll: { $ref: '#/components/schemas/Poll' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    MessageCreate:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [text, gif, sticker, voice, trivia]
+          default: text
+          description: Polls use POST /channels/{channelId}/polls. Only the server creates system messages.
+        content: { type: string, maxLength: 4000, default: '' }
+        ciphertext: { type: string, maxLength: 32768, description: 'If set, `content` must be empty.' }
+        attachments:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/Attachment' }
+        metadata: { $ref: '#/components/schemas/MessageMetadata' }
+        mentions:
+          type: array
+          items: { $ref: '#/components/schemas/Uuid' }
+        mention_everyone: { type: boolean, default: false }
+        reply_to: { type: string, format: uuid }
+        thread_parent_id: { type: string, format: uuid }
+        scheduled_for: { $ref: '#/components/schemas/Timestamp' }
+        client_id:
+          type: string
+          maxLength: 128
+          description: Optimistic-UI id echoed back to the sender (matches the realtime `TransportEvent.id`).
+    MessageUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        content: { type: string, maxLength: 4000 }
+        ciphertext: { type: [string, 'null'], maxLength: 32768 }
+        attachments:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/Attachment' }
+        metadata: { $ref: '#/components/schemas/MessageMetadata' }
+        mentions:
+          type: array
+          items: { $ref: '#/components/schemas/Uuid' }
+        scheduled_for: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+    MessagePage:
+      type: object
+      required: [messages, has_more]
+      properties:
+        messages:
+          type: array
+          items: { $ref: '#/components/schemas/Message' }
+        has_more: { type: boolean }
+        users:
+          type: object
+          description: Authors referenced by `messages`, keyed by id.
+          additionalProperties: { $ref: '#/components/schemas/PublicProfile' }
+    ReactionSummary:
+      type: object
+      required: [emoji, count, me]
+      properties:
+        emoji: { type: string, maxLength: 64 }
+        count: { type: integer, minimum: 1 }
+        me: { type: boolean, description: 'Whether the caller reacted.' }
+        user_ids:
+          type: array
+          description: The first few reactors, for tooltips.
+          maxItems: 10
+          items: { $ref: '#/components/schemas/Uuid' }
+
+    # ---- polls ----------------------------------------------------------------
+    PollOption:
+      type: object
+      required: [id, label]
+      properties:
+        id: { type: string, maxLength: 64 }
+        label: { type: string, maxLength: 100 }
+    Poll:
+      type: object
+      required: [id, message_id, question, options, allows_multiple, is_anonymous]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        message_id: { $ref: '#/components/schemas/Uuid' }
+        question: { type: string, maxLength: 300 }
+        options:
+          type: array
+          minItems: 2
+          maxItems: 10
+          items: { $ref: '#/components/schemas/PollOption' }
+        allows_multiple: { type: boolean }
+        is_anonymous: { type: boolean }
+        closes_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        created_by: { type: [string, 'null'], format: uuid }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+    PollCreate:
+      type: object
+      required: [question, options]
+      properties:
+        question: { type: string, minLength: 1, maxLength: 300 }
+        options:
+          type: array
+          minItems: 2
+          maxItems: 10
+          items: { $ref: '#/components/schemas/PollOption' }
+        allows_multiple: { type: boolean, default: false }
+        is_anonymous: { type: boolean, default: false }
+        closes_at: { $ref: '#/components/schemas/Timestamp' }
+    PollResult:
+      type: object
+      required: [option_id, votes, voted_by_me]
+      properties:
+        option_id: { type: string }
+        votes: { type: integer, minimum: 0 }
+        voted_by_me: { type: boolean }
+
+    # ---- search ---------------------------------------------------------------
+    SearchHit:
+      type: object
+      required: [id, channel_id, content, kind, created_at, rank]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        channel_id: { $ref: '#/components/schemas/Uuid' }
+        server_id: { type: [string, 'null'], format: uuid }
+        author_id: { type: [string, 'null'], format: uuid }
+        content: { type: string }
+        kind: { $ref: '#/components/schemas/MessageKind' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        rank: { type: number }
+        headline: { type: string, description: 'Snippet with matches wrapped in <b>…</b>.' }
+
+    # ---- moderation -----------------------------------------------------------
+    ModerationAction:
+      type: object
+      required: [id, server_id, target_user_id, action, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        server_id: { $ref: '#/components/schemas/Uuid' }
+        target_user_id: { $ref: '#/components/schemas/Uuid' }
+        moderator_id: { type: [string, 'null'], format: uuid }
+        action: { $ref: '#/components/schemas/ModerationActionType' }
+        reason: { type: [string, 'null'], maxLength: 1000 }
+        expires_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        revoked_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        revoked_by: { type: [string, 'null'], format: uuid }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+    ModerationActionCreate:
+      type: object
+      required: [target_user_id, action]
+      properties:
+        target_user_id: { $ref: '#/components/schemas/Uuid' }
+        action: { $ref: '#/components/schemas/ModerationActionType' }
+        reason: { type: string, maxLength: 1000 }
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: Required for `mute`, optional for `ban` (omit for a permanent ban), and not allowed for `warn` or `kick`.
+        delete_message_seconds:
+          type: integer
+          minimum: 0
+          maximum: 604800
+          description: When banning, also soft-delete the target's messages from this many seconds back.
+    Report:
+      type: object
+      required: [id, reason, status, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        reporter_id: { type: [string, 'null'], format: uuid }
+        server_id: { type: [string, 'null'], format: uuid }
+        message_id: { type: [string, 'null'], format: uuid }
+        target_user_id: { type: [string, 'null'], format: uuid }
+        reason:
+          type: string
+          enum: [spam, harassment, hate, nsfw, self_harm, impersonation, other]
+        details: { type: [string, 'null'], maxLength: 2000 }
+        status: { $ref: '#/components/schemas/ReportStatus' }
+        resolved_by: { type: [string, 'null'], format: uuid }
+        resolved_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        resolution_note: { type: [string, 'null'], maxLength: 2000 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    ReportCreate:
+      type: object
+      required: [reason]
+      anyOf:
+        - required: [message_id]
+        - required: [target_user_id]
+      properties:
+        server_id: { $ref: '#/components/schemas/Uuid' }
+        message_id: { $ref: '#/components/schemas/Uuid' }
+        target_user_id: { $ref: '#/components/schemas/Uuid' }
+        reason:
+          type: string
+          enum: [spam, harassment, hate, nsfw, self_harm, impersonation, other]
+        details: { type: string, maxLength: 2000 }
+
+    # ---- notifications --------------------------------------------------------
+    Notification:
+      type: object
+      required: [id, user_id, type, title, data, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        user_id: { $ref: '#/components/schemas/Uuid' }
+        type: { $ref: '#/components/schemas/NotificationType' }
+        title: { type: string, maxLength: 200 }
+        body: { type: [string, 'null'], maxLength: 1000 }
+        data:
+          type: object
+          additionalProperties: true
+        actor_id: { type: [string, 'null'], format: uuid }
+        server_id: { type: [string, 'null'], format: uuid }
+        channel_id: { type: [string, 'null'], format: uuid }
+        message_id: { type: [string, 'null'], format: uuid }
+        read_at: { oneOf: [{ $ref: '#/components/schemas/Timestamp' }, { type: 'null' }] }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    # ---- analytics ------------------------------------------------------------
+    AnalyticsDay:
+      type: object
+      required: [day, messages, active_users, new_members, reactions]
+      properties:
+        day: { type: string, format: date }
+        messages: { type: integer, minimum: 0 }
+        active_users: { type: integer, minimum: 0 }
+        new_members: { type: integer, minimum: 0 }
+        reactions: { type: integer, minimum: 0 }
+    ServerAnalytics:
+      type: object
+      required: [server_id, days, series, totals]
+      properties:
+        server_id: { $ref: '#/components/schemas/Uuid' }
+        days: { type: integer }
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsDay' }
+        totals:
+          type: object
+          properties:
+            messages: { type: integer }
+            active_users: { type: integer, description: 'Distinct authors across the whole window.' }
+            new_members: { type: integer }
+            reactions: { type: integer }
+            member_count: { type: integer }
+        top_channels:
+          type: array
+          items:
+            type: object
+            properties:
+              channel_id: { $ref: '#/components/schemas/Uuid' }
+              name: { type: string }
+              messages: { type: integer }

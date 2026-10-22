@@ -1,0 +1,21 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: New + > Blueprint > point at this repo. rootDir keeps the build scoped to server/.
+services:
+  - type: web
+    name: pulse-realtime
+    runtime: node
+    rootDir: server
+    plan: free
+    region: oregon
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        # Comma-separated list, e.g. https://pulse.vercel.app,http://localhost:3000
+        sync: false
