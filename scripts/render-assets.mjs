@@ -27,6 +27,7 @@ await render(sized(logo, 512), 512, 512, "public/icon-512.png", true);
 await render(sized(logo, 1024), 1024, 1024, "assets/brand/icon-1024.png", true);
 // Android adaptive icon foreground (logo with safe-zone padding) and splash
 await render(`<div style="width:1024px;height:1024px;display:flex;align-items:center;justify-content:center">${sized(logo, 600)}</div>`, 1024, 1024, "assets/brand/icon-foreground.png", true);
+await render(`<div style="width:1024px;height:1024px;background:linear-gradient(135deg,#7c5cff,#22d3ee)"></div>`, 1024, 1024, "assets/brand/icon-background.png");
 await render(`<div style="width:2732px;height:2732px;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 45%,#2a1f5c,#0b0b14 60%)">${sized(logo, 520)}</div>`, 2732, 2732, "assets/brand/splash.png");
 // Open Graph / social preview
 await render(`<div style="width:1280px;height:640px;display:flex;align-items:center;justify-content:center;background:#0b0b14">${banner.replace('width="1280" height="420"', 'width="1240" height="407"')}</div>`, 1280, 640, "public/og.png");

@@ -47,10 +47,15 @@ jobs:
           mkdir -p assets
           cp ../assets/brand/icon-1024.png assets/icon-only.png
           cp ../assets/brand/icon-foreground.png assets/icon-foreground.png
+          cp ../assets/brand/icon-background.png assets/icon-background.png
           cp ../assets/brand/splash.png assets/splash.png
           cp ../assets/brand/splash.png assets/splash-dark.png
-          npx --yes @capacitor/assets@3 generate --android --iconBackgroundColor "#0b0b14" --iconBackgroundColorDark "#0b0b14" --splashBackgroundColor "#0b0b14" --splashBackgroundColorDark "#0b0b14" || echo "icon generation skipped"
+          npx --yes @capacitor/assets@3 generate --android --splashBackgroundColor "#0b0b14" --splashBackgroundColorDark "#0b0b14" || echo "icon generation skipped"
           npx cap sync android
+          # adaptive icons need their background layer; fall back to legacy icons if it is missing
+          if ! ls android/app/src/main/res/mipmap-*/ic_launcher_background.png > /dev/null 2>&1; then
+            rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          fi
       - name: Gradle assemble
         working-directory: client/android
         run: |
