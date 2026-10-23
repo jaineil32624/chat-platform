@@ -259,9 +259,11 @@ Step-by-step instructions: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 |---|---|---|
 | 🌐 Web | [Live site](https://jaineil32624.github.io/chat-platform/) | Static site with a PWA manifest (add to home screen) |
 | 🤖 Android | [`PulseChat.apk`](https://github.com/jaineil32624/chat-platform/releases/latest/download/PulseChat.apk) | Capacitor wrapper of the web app. Enable *Install unknown apps* to sideload |
-| 🎮 Godot web | [Play Pulse Lite](https://jaineil32624.github.io/chat-platform/play/) | A lightweight Godot 4.3 take on the same simulation |
+| 🎮 Godot web | [Play Pulse Lite](https://jaineil32624.github.io/chat-platform/play/) | A lightweight Godot 4.3 take on the same simulation (screenshot below) |
 | 🪟 Windows | [`PulseLite-windows.zip`](https://github.com/jaineil32624/chat-platform/releases/latest/download/PulseLite-windows.zip) | Single `.exe` |
 | 🐧 Linux | [`PulseLite-linux.zip`](https://github.com/jaineil32624/chat-platform/releases/latest/download/PulseLite-linux.zip) | Single binary |
+
+<p align="center"><img src="screenshots/godot-lite.png" alt="Pulse Lite, the Godot 4 client, running in the browser" width="70%" /></p>
 
 Build the APK locally (requires Android Studio / JDK 21): `cd client && npm run cap:sync && npx cap open android`.
 
